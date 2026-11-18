@@ -19,6 +19,7 @@ import type { SessionEntry } from "@/lib/types";
 import { readSubagentRun, readSubagentSessionResources } from "@/lib/subagents";
 import { readSideRelation, sideOwnEntries } from "@/lib/side-session";
 import { readSessionToolSelection } from "@/lib/session-tool-selection";
+import { readSshRemoteState } from "@/lib/ssh-remote-state";
 import { jsonResponse } from "@/lib/json-response";
 import { deleteSessions } from "@/lib/session-delete";
 import { attachTranscriptNotices, readSessionTranscriptNotices } from "@/lib/transcript-notices-server";
@@ -115,6 +116,7 @@ export async function GET(
     const side = !subagent && header ? readSideRelation(entries as never) : null;
     const toolNames = readSubagentSessionResources(entries as never)?.tools
       ?? readSessionToolSelection(entries as never);
+    const sshRemote = readSshRemoteState(entries as never);
     const info = header ? (await attachSessionProjectInfo([{
       path: filePath,
       id: header.id,
@@ -154,6 +156,7 @@ export async function GET(
         stats,
         totalActiveMs,
         ...(toolNames !== undefined ? { toolNames } : {}),
+        ...(sshRemote ? { sshRemote } : {}),
         ...(wrapperRebuilt ? { wrapperRebuilt: true } : {}),
       },
     )) ?? jsonResponse(
@@ -170,6 +173,7 @@ export async function GET(
         stats,
         totalActiveMs,
         ...(toolNames !== undefined ? { toolNames } : {}),
+        ...(sshRemote ? { sshRemote } : {}),
         ...(wrapperRebuilt ? { wrapperRebuilt: true } : {}),
       },
     );

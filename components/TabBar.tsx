@@ -11,6 +11,7 @@ export interface Tab {
   label: string;
   filePath: string;
   kind?: "terminal" | "agent" | "side";
+  source?: "local" | "remote";
   closing?: boolean;
   sourceSessionId?: string | null;
   initialDisplayMode?: FileViewerDisplayMode;
@@ -158,10 +159,23 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorderTa
                 flex: 1,
                 fontWeight: isActive ? 500 : 400,
               }}
-              title={tab.filePath}
+              title={tab.source === "remote" ? `[Remote] ${tab.filePath}` : tab.filePath}
             >
               {tab.label}
             </span>
+            {tab.source === "remote" && (
+              <span
+                title="SSH Remote"
+                aria-label="SSH Remote"
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: "#4ade80",
+                  flexShrink: 0,
+                }}
+              />
+            )}
             <button
               draggable={false}
               onDragStart={(event) => event.stopPropagation()}

@@ -64,9 +64,19 @@ const secondaryActionStyle: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-async function loadDirectories(directory?: string): Promise<BrowseResponse> {
-  const query = directory ? `?path=${encodeURIComponent(directory)}` : "";
-  const response = await fetch(`/api/cwd/browse${query}`);
+async function loadDirectories(
+  directory?: string,
+  source?: "local" | "remote",
+  sourceSessionId?: string | null,
+): Promise<BrowseResponse> {
+  const params = new URLSearchParams();
+  if (directory) params.set("path", directory);
+  if (source === "remote" && sourceSessionId) {
+    params.set("source", "remote");
+    params.set("sessionId", sourceSessionId);
+  }
+  const query = params.toString();
+  const response = await fetch(`/api/cwd/browse${query ? `?${query}` : ""}`);
   const data = await response.json() as BrowseResponse;
   if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
   return data;
@@ -111,11 +121,13 @@ interface Props {
   onCancel: () => void;
   onSelect: (path: string) => void;
   initialPath?: string;
+  source?: "local" | "remote";
+  sourceSessionId?: string | null;
   busy?: boolean;
   error?: string | null;
 }
 
-export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false, error }: Props) {
+export function DirectoryPicker({ onCancel, onSelect, initialPath, source = "local", sourceSessionId = null, busy = false, error }: Props) {
   const { t } = useI18n();
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [currentPath, setCurrentPath] = useState("");
@@ -139,7 +151,7 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await loadDirectories(directory);
+      const data = await loadDirectories(directory, source, sourceSessionId);
       const nextPath = data.path ?? directory ?? "/";
       setCurrentPath(nextPath);
       setParentDirectory(data.parentPath ?? null);
@@ -153,7 +165,7 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [source, sourceSessionId]);
 
   useEffect(() => {
     setPortalTarget(document.body);
@@ -213,8 +225,8 @@ export function DirectoryPicker({ onCancel, onSelect, initialPath, busy = false,
   const typedPath = pathInput.trim();
   const hasUncommittedPath = typedPath !== currentPath;
   const canSelect = Boolean(typedPath) && !busy && !loading;
-  const canCreate = Boolean(currentPath) && !hasUncommittedPath && !busy && !loading;
-  const canNavigateUp = Boolean(parentDirectory) || isWindowsDriveRoot(currentPath);
+  const canCreate = source !== "remote" && Boolean(currentPath) && !hasUncommittedPath && !busy && !loading;
+  const canNavigateUp = Boolean(parentDirectory) || (source !== "remote" && isWindowsDriveRoot(currentPath));
 
   const handleSelect = async () => {
     const path = hasUncommittedPath ? await navigateTo(typedPath) : currentPath;

@@ -51,6 +51,8 @@ interface FileNode {
 
 interface Props {
   cwd: string;
+  source?: "local" | "remote";
+  sourceSessionId?: string | null;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
   refreshKey?: number;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -99,9 +101,20 @@ async function responseError(res: Response, fallback: string): Promise<Error> {
   return new Error(message);
 }
 
-async function fetchEntries(dirPath: string, showHidden = false): Promise<FileNode[]> {
+async function fetchEntries(
+  dirPath: string,
+  showHidden = false,
+  source: "local" | "remote" = "local",
+  sourceSessionId?: string | null,
+): Promise<FileNode[]> {
   const encoded = encodeFilePathForApi(dirPath);
-  const res = await fetch(`/api/files/${encoded}?type=list${showHidden ? "&hidden=1" : ""}`);
+  const params = new URLSearchParams({ type: "list" });
+  if (showHidden) params.set("hidden", "1");
+  if (source === "remote") {
+    params.set("source", "remote");
+    if (sourceSessionId) params.set("sessionId", sourceSessionId);
+  }
+  const res = await fetch(`/api/files/${encoded}?${params.toString()}`);
   if (!res.ok) throw await responseError(res, "Failed to load files");
   const data = await res.json() as { entries?: FileEntry[] };
   return (data.entries ?? []).map((e) => ({
@@ -207,6 +220,8 @@ export function TreeNode({
   node,
   depth,
   cwd,
+  source = "local",
+  sourceSessionId,
   onOpenFile,
   onAtMention,
   expandedPaths,
@@ -225,6 +240,8 @@ export function TreeNode({
   node: FileNode;
   depth: number;
   cwd: string;
+  source?: "local" | "remote";
+  sourceSessionId?: string | null;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
   expandedPaths: Set<string>;
@@ -276,7 +293,7 @@ export function TreeNode({
     setLoading(true);
     setLoadError(null);
     try {
-      const entries = await fetchEntries(node.fullPath, showHidden);
+      const entries = await fetchEntries(node.fullPath, showHidden, source, sourceSessionId);
       setChildren(entries);
       setLoaded(true);
     } catch (error) {
@@ -284,7 +301,7 @@ export function TreeNode({
     } finally {
       setLoading(false);
     }
-  }, [loaded, node.fullPath, showHidden]);
+  }, [loaded, node.fullPath, showHidden, source, sourceSessionId]);
 
   // The switch changes what every listing holds: reload an open directory now
   // and a collapsed one when it next opens.
@@ -320,9 +337,9 @@ export function TreeNode({
       onToggleExpanded(node.fullPath, next);
       if (next && !loaded && !pendingLinkTarget) loadChildren();
     } else {
-      onOpenFile(node.fullPath, node.name);
+      onOpenFile(node.fullPath, node.name, { source, sourceSessionId });
     }
-  }, [node.isDir, node.fullPath, node.name, loaded, open, pendingLinkTarget, loadChildren, onOpenFile, onToggleExpanded]);
+  }, [node.isDir, node.fullPath, node.name, loaded, open, pendingLinkTarget, loadChildren, onOpenFile, onToggleExpanded, source, sourceSessionId]);
 
   const handleAllowLink = useCallback(async (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -576,6 +593,8 @@ export function TreeNode({
               node={child}
               depth={depth + 1}
               cwd={cwd}
+              source={source}
+              sourceSessionId={sourceSessionId}
               onOpenFile={onOpenFile}
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
@@ -608,7 +627,7 @@ export function TreeNode({
   );
 }
 
-type OpenFileOptions = { sourceSessionId?: string | null; modeHint?: "diff" };
+type OpenFileOptions = { sourceSessionId?: string | null; source?: "local" | "remote"; modeHint?: "diff" };
 
 type OpenFileHandler = (filePath: string, fileName: string, options?: OpenFileOptions) => void;
 
@@ -884,6 +903,8 @@ function ChangesViewToggleIcon({ mode }: { mode: ChangesViewMode }) {
 
 export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileExplorer({
   cwd,
+  source = "local",
+  sourceSessionId,
   onOpenFile,
   refreshKey,
   onAtMention,
@@ -930,7 +951,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   // Reuse the cached, bounded file index used by @ mentions.
   useEffect(() => {
-    if (!fileSearchOpen) return;
+    if (!fileSearchOpen || source === "remote") {
+      if (source === "remote") {
+        setSearchPaths([]);
+        setSearchLoading(false);
+        setSearchError(false);
+      }
+      return;
+    }
     const query = searchQuery.trim();
     if (!query) {
       setSearchPaths([]);
@@ -954,7 +982,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         .finally(() => { if (!controller.signal.aborted) setSearchLoading(false); });
     }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [cwd, fileSearchOpen, searchQuery]);
+  }, [cwd, fileSearchOpen, searchQuery, source]);
 
   // Focus the search input whenever the search panel opens.
   useEffect(() => {
@@ -1199,17 +1227,19 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     if (prevCwdRef.current !== null) expandedPathsByCwd.save(prevCwdRef.current, expandedPathsRef.current);
   }, []);
 
+  const expansionKey = source === "remote" ? `remote:${sourceSessionId ?? ""}:${cwd}` : cwd;
+
   useEffect(() => {
     const previousCwd = prevCwdRef.current;
-    const cwdChanged = previousCwd !== cwd;
-    prevCwdRef.current = cwd;
+    const cwdChanged = previousCwd !== expansionKey;
+    prevCwdRef.current = expansionKey;
 
     // Swap the open directories only when cwd changes, not on refreshKey bumps.
     // The roots unmount while the new cwd loads, so each restored directory
     // mounts open and lists itself; one that is gone is never listed to look.
     if (cwdChanged) {
       if (previousCwd !== null) expandedPathsByCwd.save(previousCwd, expandedPathsRef.current);
-      const restored = expandedPathsByCwd.restore(cwd);
+      const restored = expandedPathsByCwd.restore(expansionKey);
       expandedPathsRef.current = restored;
       setExpandedPaths(restored);
       setHighlightedPaths(new Set());
@@ -1221,12 +1251,12 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setLoading(cwdChanged);
     setError(null);
     let cancelled = false;
-    fetchEntries(cwd, showHidden)
+    fetchEntries(cwd, showHidden, source, sourceSessionId)
       .then((entries) => { if (!cancelled) setRoots(entries); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey, showHidden]);
+  }, [cwd, expansionKey, refreshKey, treeRefreshKey, showHidden, source, sourceSessionId]);
 
   // Files changed outside pi-web (an editor, a terminal) show up once the
   // window is back in front (#1144).
@@ -1237,6 +1267,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   }, []);
 
   useEffect(() => {
+    if (source === "remote") {
+      setGitFiles([]);
+      setGitLineStats({ additions: 0, deletions: 0 });
+      return;
+    }
     let cancelled = false;
     // Aborting a replaced request also stops its scan on the server (#1584).
     const controller = new AbortController();
@@ -1471,6 +1506,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                     node={node}
                     depth={0}
                     cwd={cwd}
+                    source={source}
+                    sourceSessionId={sourceSessionId}
                     onOpenFile={onOpenFile}
                     onAtMention={onAtMention}
                     expandedPaths={searchExpanded}
@@ -1579,6 +1616,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 node={node}
                 depth={0}
                 cwd={cwd}
+                source={source}
+                sourceSessionId={sourceSessionId}
                 onOpenFile={onOpenFile}
                 onAtMention={onAtMention}
                 expandedPaths={expandedPaths}

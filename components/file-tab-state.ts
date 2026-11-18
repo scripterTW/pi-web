@@ -33,6 +33,7 @@ export function switchFileWorkspace(
 interface OpenFileTabInput {
   fileName: string;
   filePath: string;
+  source?: "local" | "remote";
   modeHint?: "diff";
   page?: number;
   sourceSessionId?: string | null;
@@ -46,6 +47,7 @@ export function openFileTab(tabs: Tab[], input: OpenFileTabInput): Tab[] {
       id: input.tabId,
       label: input.fileName,
       filePath: input.filePath,
+      source: input.source,
       sourceSessionId: input.sourceSessionId,
       initialDisplayMode: input.modeHint,
       page: input.page,

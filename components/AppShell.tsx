@@ -77,6 +77,7 @@ import type { AgentEndInfo, NewSessionChoices } from "@/hooks/useAgentSession";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { formatActiveDuration, formatCompactCount, formatCostShort } from "@/lib/session-stats-format";
 import type { FileViewerState } from "@/lib/file-viewer-state";
+import type { SshRemoteState } from "@/lib/ssh-remote-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { createSideChat, deleteSideChat } from "@/lib/side-chat-client";
 import { sideChatHit } from "@/lib/session-search-hit";
@@ -159,6 +160,7 @@ export function AppShell() {
     if (soundEnabledRef.current && claimDoneChime(sessionIds, since)) playDoneSound();
   }, [playDoneSound, soundEnabledRef]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  const [sshRemote, setSshRemote] = useState<SshRemoteState | null>(null);
   // Latest selection readable from async callbacks whose captured state is
   // stale (e.g. a delete that completes after the user navigated away).
   const selectedSessionRef = useRef(selectedSession);
@@ -1314,15 +1316,17 @@ export function AppShell() {
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff"; page?: number },
+    options?: { sourceSessionId?: string | null; source?: "local" | "remote"; modeHint?: "diff"; page?: number },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
+    const source = options?.source;
     const modeHint = options?.modeHint;
     const page = options?.page;
-    const tabId = `file:${filePath}`;
+    const tabId = source === "remote" ? `file:remote:${filePath}` : `file:${filePath}`;
     setFileTabs((prev) => openFileTab(prev, {
       fileName,
       filePath,
+      source,
       modeHint,
       page,
       sourceSessionId,
@@ -1651,10 +1655,31 @@ export function AppShell() {
     return () => observer.disconnect();
   }, [windowTitle]);
 
+  useEffect(() => {
+    const sessionId = selectedSession?.id;
+    if (!sessionId) {
+      setSshRemote(null);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ sshRemote?: SshRemoteState | null }>) : null))
+      .then((data) => {
+        if (!cancelled) setSshRemote(data?.sshRemote ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSshRemote(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSession?.id, explorerRefreshKey]);
+
   const sidebarContent = (
     <>
       <SessionSidebar
         selectedSessionId={selectedSession?.id ?? null}
+        sshRemote={sshRemote}
         onSelectSession={handleSelectSession}
         onSelectSideChat={handleSelectSideChat}
         onNewSession={handleNewSession}
@@ -3064,6 +3089,7 @@ export function AppShell() {
               filePath={activeFileTab.filePath}
               cwd={activeCwd ?? undefined}
               sourceSessionId={activeFileTab.sourceSessionId}
+              source={activeFileTab.source}
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialPage={activeFileTab.page}
@@ -3080,7 +3106,7 @@ export function AppShell() {
               onOpenFile={(filePath, page) => handleOpenFile(
                 filePath,
                 getFileName(filePath),
-                { sourceSessionId: activeFileTab.sourceSessionId, page },
+                { sourceSessionId: activeFileTab.sourceSessionId, source: activeFileTab.source, page },
               )}
             />
           ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) && !activeAgentTab ? (

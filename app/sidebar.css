@@ -1294,6 +1294,106 @@ a.session-tree-main {
   font-weight: 400;
 }
 
+.sidebar-file-source-select {
+  flex: 0 1 auto;
+  min-width: 68px;
+  max-width: 145px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-subtle, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.sidebar-file-source-select:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar-file-source-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.sidebar-remote-hint-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.sidebar-remote-hint-btn:hover,
+.sidebar-remote-hint-btn[aria-expanded="true"] {
+  border-style: solid;
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.sidebar-remote-hint-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel, var(--bg));
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.sidebar-remote-hint-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sidebar-remote-hint-cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text);
+}
+
+.sidebar-remote-hint-copy {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sidebar-remote-hint-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* The keys' group, right-aligned by the toggle before it: never under its
    seven keys' minimum (no shrink from 7 x 18px), never over their maximum
    (7 x 26px). Its grow factor, far above the toggle's, gives it the room

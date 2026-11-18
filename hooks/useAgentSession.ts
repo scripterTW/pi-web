@@ -68,6 +68,7 @@ import {
   getLiveFollowAttached,
   shouldShowScrollToLatest,
 } from "@/lib/chat-lazy-load";
+import type { SshRemoteState } from "@/lib/ssh-remote-state";
 import {
   createStreamingStore,
   type ClientAssistantMessageEvent,
@@ -80,6 +81,7 @@ export interface SessionData {
   tree: SessionTreeNode[];
   leafId: string | null;
   toolNames?: string[];
+  sshRemote?: SshRemoteState | null;
   /** Opaque freshness token for the session view cache (summary tree reads). */
   snapshotRevision?: string | null;
   /** "summary" when `tree` carries the body-free navigation format. */

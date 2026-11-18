@@ -1,3 +1,4 @@
+import { posix as posixPath } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { stat } from "fs/promises";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -10,11 +11,77 @@ import {
   resolveDirectory,
   shouldShowWindowsDrivePicker,
 } from "@/lib/directory-browser";
+import { getRpcSession } from "@/lib/rpc-manager";
+import { openSessionManager, resolveSessionPath } from "@/lib/session-reader";
+import { isSftpDirectoryEntry, joinRemotePosixPath, sftpReaddir, sftpStat, withRemoteSftp } from "@/lib/ssh-remote";
+import { normalizePosixPath, readSshRemoteState } from "@/lib/ssh-remote-state";
 
-// GET /api/cwd/browse?path=...：列出文件系统中的可读子目录。
+async function resolveSessionSshRemote(sessionId: string | null) {
+  if (!sessionId) return null;
+  const rpc = getRpcSession(sessionId);
+  const liveRpc = rpc?.isAlive() ? rpc : undefined;
+  const resolvedPath = liveRpc ? null : await resolveSessionPath(sessionId);
+  if (!liveRpc && !resolvedPath) return null;
+  const sm = liveRpc?.inner.sessionManager ?? openSessionManager(resolvedPath!);
+  return readSshRemoteState(sm.getEntries() as unknown[]);
+}
+
+// GET /api/cwd/browse?path=...：列出文件系统中的可讀子目錄（支援 source=remote）。
 export async function GET(request: NextRequest) {
   try {
+    const source = request.nextUrl.searchParams.get("source");
+    const sessionId = request.nextUrl.searchParams.get("sessionId");
     const requested = request.nextUrl.searchParams.get("path")?.trim();
+
+    if (source === "remote") {
+      const sshRemote = await resolveSessionSshRemote(sessionId);
+      if (!sshRemote || !sshRemote.connected) {
+        return NextResponse.json({ error: "No active SSH remote connection for this session" }, { status: 403 });
+      }
+      const candidate = normalizePosixPath(requested || sshRemote.cwd || "/");
+      if (!candidate.startsWith("/")) {
+        return NextResponse.json({ error: "Invalid remote path" }, { status: 400 });
+      }
+      try {
+        const result = await withRemoteSftp(sshRemote.command, async (sftp) => {
+          const st = await sftpStat(sftp, candidate);
+          if (!st.isDirectory) {
+            return { error: "Path is not a directory", status: 400 as const };
+          }
+          const entries = await sftpReaddir(sftp, candidate);
+          const dirChecks = await Promise.all(
+            entries
+              .filter((entry) => entry.filename !== "." && entry.filename !== ".." && !entry.filename.startsWith("."))
+              .map(async (entry) => {
+                const fullPath = joinRemotePosixPath(candidate, entry.filename);
+                const direct = isSftpDirectoryEntry(entry);
+                const isDir = direct === null
+                  ? await sftpStat(sftp, fullPath).then((s) => s.isDirectory).catch(() => false)
+                  : direct;
+                return { name: entry.filename, path: fullPath, isDir };
+              }),
+          );
+          const directories = dirChecks
+            .filter((item) => item.isDir)
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(({ name, path }) => ({ name, path }));
+          const parentPath = candidate === "/" ? null : posixPath.dirname(candidate);
+          return {
+            path: candidate,
+            parentPath,
+            directories,
+          };
+        });
+        if ("error" in result) {
+          return NextResponse.json({ error: result.error }, { status: result.status });
+        }
+        return NextResponse.json(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = /no such file|enoent/i.test(message) ? 404 : 500;
+        return NextResponse.json({ error: message }, { status });
+      }
+    }
 
     if (shouldShowWindowsDrivePicker(requested)) {
       return NextResponse.json({

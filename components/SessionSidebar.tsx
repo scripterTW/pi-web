@@ -2,6 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
+import type { SshRemoteState } from "@/lib/ssh-remote-state";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
@@ -216,6 +217,7 @@ export interface SelectSessionOptions {
 
 interface Props {
   selectedSessionId: string | null;
+  sshRemote?: SshRemoteState | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number, options?: SelectSessionOptions) => void;
   /** A side chat's search hit: its parent opens, then the side chat's tab. */
   onSelectSideChat: (session: SessionInfo) => void;
@@ -238,7 +240,7 @@ interface Props {
     projectRoot?: string | null,
     projectKey?: string | null,
   ) => void;
-  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" }) => void;
+  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; source?: "local" | "remote"; modeHint?: "diff"; page?: number }) => void;
   onOpenTerminal?: (cwd: string) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
@@ -515,7 +517,7 @@ function buttonAnchor(element: HTMLElement, align: "start" | "end"): SidebarMenu
   return { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, align };
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, sshRemote, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -530,8 +532,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [homeDir, setHomeDir] = useState<string>("");
-  // Open for the files tab's project list, or for the composer's bar ("new-session").
-  const [customPathOpen, setCustomPathOpen] = useState<false | "files" | "new-session">(false);
+  // Open for the files tab's project list, the composer's bar ("new-session"), or remote directory browse ("remote").
+  const [customPathOpen, setCustomPathOpen] = useState<false | "files" | "new-session" | "remote">(false);
   const [customPathValue, setCustomPathValue] = useState(loadLastCustomCwd);
   const [customPathError, setCustomPathError] = useState<string | null>(null);
   const [customPathValidating, setCustomPathValidating] = useState(false);
@@ -2879,6 +2881,27 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   } as const;
 
   const explorerCwd = selectedCwd ?? selectedCwdProp ?? null;
+  const [fileSource, setFileSource] = useState<"local" | "remote">("local");
+  const [remoteBrowseCwd, setRemoteBrowseCwd] = useState<string | null>(null);
+  const [remoteHintOpen, setRemoteHintOpen] = useState(false);
+  const [remoteHintCopied, setRemoteHintCopied] = useState(false);
+  const hasRemote = Boolean(sshRemote?.connected && sshRemote.cwd);
+  const effectiveFileSource: "local" | "remote" = hasRemote && fileSource === "remote" ? "remote" : "local";
+  const activeExplorerCwd = effectiveFileSource === "remote" && sshRemote ? (remoteBrowseCwd ?? sshRemote.cwd) : explorerCwd;
+  const remoteHostLabel = useMemo(() => {
+    if (!sshRemote?.command) return "Remote";
+    const tokens = sshRemote.command.trim().split(/\s+/);
+    const target = tokens.find((tok) => tok.includes("@")) ?? tokens[tokens.length - 1] ?? "Remote";
+    return target;
+  }, [sshRemote?.command]);
+
+  useEffect(() => {
+    if (!hasRemote) setFileSource("local");
+  }, [hasRemote, selectedSessionId]);
+
+  useEffect(() => {
+    setRemoteBrowseCwd(null);
+  }, [selectedSessionId, sshRemote?.cwd]);
   const changedFilesTitle = explorerCwd && changesCount > 0 ? t("sidebar.changedFiles", { count: changesCount }) : undefined;
   // The changes view's key turns disabled once nothing is changed (a
   // commit, a revert), under a keyboard user too. The browser blurs it to
@@ -3008,6 +3031,40 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     </ToolbarIconButton>
   );
 
+  const fileSourceSelect = hasRemote && sshRemote ? (
+    <select
+      className="sidebar-file-source-select"
+      aria-label="File source"
+      value={effectiveFileSource}
+      title={effectiveFileSource === "remote" ? `${sshRemote.command}\n${sshRemote.cwd}` : explorerCwd ?? undefined}
+      onChange={(event) => {
+        const next = event.target.value === "remote" ? "remote" : "local";
+        setFileSource(next);
+        if (stacked && filesCollapsed) {
+          setFilesSectionCollapsed(false);
+        }
+      }}
+    >
+      <option value="local">Local</option>
+      <option value="remote">● {remoteHostLabel}</option>
+    </select>
+  ) : (
+    <button
+      type="button"
+      className="sidebar-remote-hint-btn"
+      aria-expanded={remoteHintOpen}
+      title="安裝 pi-ssh-remote 即可於此切換瀏覽遠端檔案"
+      onClick={() => {
+        setRemoteHintOpen((open) => !open);
+        if (stacked && filesCollapsed) {
+          setFilesSectionCollapsed(false);
+        }
+      }}
+    >
+      SSH
+    </button>
+  );
+
   return (
     <div
       ref={setSidebarRoot}
@@ -3018,9 +3075,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     >
       {customPathOpen && (
         <DirectoryPicker
-          initialPath={customPathValue}
-          busy={customPathValidating}
-          error={customPathError}
+          initialPath={customPathOpen === "remote" ? (activeExplorerCwd ?? sshRemote?.cwd ?? "/") : customPathValue}
+          source={customPathOpen === "remote" ? "remote" : "local"}
+          sourceSessionId={customPathOpen === "remote" ? selectedSessionId : null}
+          busy={customPathOpen === "remote" ? false : customPathValidating}
+          error={customPathOpen === "remote" ? null : customPathError}
           onCancel={() => {
             // The composer's "Open another project…" puts focus back on its
             // control: the picker took it and leaves nothing behind.
@@ -3031,7 +3090,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
             setCustomPathError(null);
             if (opener) focusAfterCommit(() => (opener.isConnected ? opener : null));
           }}
-          onSelect={(path) => void commitCustomPath(path)}
+          onSelect={(path) => {
+            if (customPathOpen === "remote") {
+              setRemoteBrowseCwd(path);
+              setCustomPathOpen(false);
+              return;
+            }
+            void commitCustomPath(path);
+          }}
         />
       )}
       {/* One toolbar row, in the cells of the chat's top bar beside it (its
@@ -3265,15 +3331,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
               <ChevronIcon size={12} strokeWidth={3} className={`session-tree-chevron${filesCollapsed ? "" : " is-open"}`} />
               <span className="sidebar-files-section-label">{t("sidebar.tabFiles")}</span>
               {/* As the pinned section's count; the changes key says it to a screen reader. */}
-              {changedFilesTitle && <span className="sidebar-files-section-count" aria-hidden="true">· {changesCount}</span>}
+              {effectiveFileSource === "local" && changedFilesTitle && <span className="sidebar-files-section-count" aria-hidden="true">· {changesCount}</span>}
             </button>
+            {fileSourceSelect}
             <div className="sidebar-files-keys" role="group" aria-label={t("sidebar.fileActions")}>
               {terminalButton}
-              {fileManagerButton}
-              {uploadButton}
+              {effectiveFileSource === "local" && fileManagerButton}
+              {effectiveFileSource === "local" && uploadButton}
               {refreshButton}
               {ignoredFilesButton()}
-              {changesButton}
+              {effectiveFileSource === "local" && changesButton}
               <ToolbarIconButton
                 onClick={() => {
                   // Folded, the section opens first, with the field open and focused.
@@ -3313,43 +3380,87 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
                 none. The list comes from the loaded project
                 (not just its forCwd), so switching between worktrees of one
                 project keeps the box instead of flickering while it refetches. */}
-            <ProjectWorktreePicker
-              handleRef={filesPickerRef}
-              layout={stacked ? "row" : "stacked"}
-              context={newSessionContext ?? { project: null, worktrees: null, currentWorktreePath: null, projects: projectChoiceList }}
-              mobile={isMobile}
-              label={t("sidebar.projectAndWorktree")}
-              placeholder={initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")}
-              homeDir={homeDir}
-              projectActivity={projectActivity}
-              worktreeHint={inactiveWorktreeSelector}
-              newWorktreeTitle={t("sidebar.createWorktreeTitle")}
-              onPick={handleFilesPick}
-              onUseDefaultDirectory={() => { void handleDefaultCwd(); }}
-              onOpenFolder={handleCustomPathClick}
-              onRefreshWorktrees={refreshWorktrees}
-              onCreateWorktree={createWorktree}
-              onRemoveWorktree={handleRemoveWorktree}
-            />
+            <div hidden={effectiveFileSource === "remote"} style={{ width: "100%" }}>
+              <ProjectWorktreePicker
+                handleRef={filesPickerRef}
+                layout={stacked ? "row" : "stacked"}
+                context={newSessionContext ?? { project: null, worktrees: null, currentWorktreePath: null, projects: projectChoiceList }}
+                mobile={isMobile}
+                label={t("sidebar.projectAndWorktree")}
+                placeholder={initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")}
+                homeDir={homeDir}
+                projectActivity={projectActivity}
+                worktreeHint={inactiveWorktreeSelector}
+                newWorktreeTitle={t("sidebar.createWorktreeTitle")}
+                onPick={handleFilesPick}
+                onUseDefaultDirectory={() => { void handleDefaultCwd(); }}
+                onOpenFolder={handleCustomPathClick}
+                onRefreshWorktrees={refreshWorktrees}
+                onCreateWorktree={createWorktree}
+                onRemoveWorktree={handleRemoveWorktree}
+              />
+            </div>
+            {effectiveFileSource === "remote" && sshRemote && (
+              <div className={`project-picker is-${stacked ? "row" : "stacked"}`} role="group" aria-label="Remote directory">
+                <button
+                  type="button"
+                  className="project-picker-button is-project"
+                  title={`${sshRemote.command}\n${activeExplorerCwd ?? sshRemote.cwd}`}
+                  onClick={() => {
+                    setCustomPathError(null);
+                    setCustomPathOpen("remote");
+                  }}
+                >
+                  <span className="project-picker-path">
+                    <span>{activeExplorerCwd ?? sshRemote.cwd}</span>
+                  </span>
+                  <ChevronIcon size={10} className="project-picker-chevron" />
+                </button>
+              </div>
+            )}
             {/* The files tab's keys, under the picker. Always the same
                 buttons in the same places: the changes view stays (disabled)
                 while there is nothing changed, so nothing moves as an agent
                 edits files and commits. The folder's actions first, the
                 tree's two views last (what it lists, then its changes); its
                 search is the toolbar row's search button. */}
-            {!stacked && explorerCwd && (
+            {!stacked && activeExplorerCwd && (
               <div className="sidebar-files-actions" role="group" aria-label={t("sidebar.fileActions")}>
+                {fileSourceSelect}
                 {onOpenTerminal && terminalButton}
-                {fileManagerButton}
-                {uploadButton}
+                {effectiveFileSource === "local" && fileManagerButton}
+                {effectiveFileSource === "local" && uploadButton}
                 {refreshButton}
                 {ignoredFilesButton("sidebar-files-views-start")}
-                {changesButton}
+                {effectiveFileSource === "local" && changesButton}
+              </div>
+            )}
+            {!hasRemote && remoteHintOpen && (
+              <div className="sidebar-remote-hint-card" role="region" aria-label="pi-ssh-remote integration">
+                <div className="sidebar-remote-hint-card-head">
+                  <span>遠端檔案整合（pi-ssh-remote）</span>
+                  <DismissButton onClick={() => setRemoteHintOpen(false)} title={t("files.dismissError")} />
+                </div>
+                <span>安裝並透過此套件連線至遠端主機後，即可在此直接切換瀏覽遠端檔案：</span>
+                <div className="sidebar-remote-hint-cmd">
+                  <code>pi install npm:pi-ssh-remote</code>
+                  <button
+                    type="button"
+                    className="sidebar-remote-hint-copy"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText("pi install npm:pi-ssh-remote");
+                      setRemoteHintCopied(true);
+                      window.setTimeout(() => setRemoteHintCopied(false), 1800);
+                    }}
+                  >
+                    {remoteHintCopied ? "已複製" : "複製"}
+                  </button>
+                </div>
               </div>
             )}
           </div>
 
-          {explorerCwd && fileManagerErrorMessage && (
+          {activeExplorerCwd && fileManagerErrorMessage && (
             <div role="alert" className="sidebar-files-error">
               <span className="sidebar-files-error-text">{fileManagerErrorMessage}</span>
               <DismissButton onClick={() => setFileManagerError(null)} title={t("files.dismissError")} />
@@ -3359,10 +3470,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
               section hides it, so the expanded tree, a search and an upload in
               progress survive a switch. */}
           <div ref={explorerScrollRef} className="sidebar-files-scroll scrollbar-subtle">
-            {explorerCwd && (
+            {activeExplorerCwd && (
               <FileExplorer
                 ref={fileExplorerRef}
-                cwd={explorerCwd}
+                cwd={activeExplorerCwd}
+                source={effectiveFileSource}
+                sourceSessionId={selectedSessionId}
                 onOpenFile={onOpenFile ?? (() => {})}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}

@@ -46,6 +46,7 @@ interface Props {
   filePath: string;
   cwd?: string;
   sourceSessionId?: string | null;
+  source?: "local" | "remote";
   onOpenFile?: (filePath: string, page?: number) => void;
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   /** Insert this file's relative path into the chat input (@ mention). */
@@ -259,10 +260,12 @@ function getFileApiUrl(
   type: "read" | "download" | "meta" | "preview" | "watch",
   sourceSessionId?: string | null,
   params: Record<string, string | number | undefined> = {},
+  source: "local" | "remote" = "local",
 ): string {
   const encoded = encodeFilePathForApi(filePath);
   const searchParams = new URLSearchParams({ type });
   if (sourceSessionId) searchParams.set("sessionId", sourceSessionId);
+  if (source === "remote") searchParams.set("source", "remote");
   // A watch is a stream: the page that holds it, for the Debug panel's connected pages.
   if (type === "watch") searchParams.set("holder", pageId());
   for (const [key, value] of Object.entries(params)) {
@@ -276,9 +279,15 @@ function getFileApiUrl(
 // response's Cache-Control, so a counter local to one viewer (1 on every mount)
 // showed a closed and reopened tab's old picture.
 let previewLoads = 0;
-function usePreviewUrl(filePath: string, type: "read" | "preview", sourceSessionId: string | null | undefined, bust: number): string {
+function usePreviewUrl(
+  filePath: string,
+  type: "read" | "preview",
+  sourceSessionId: string | null | undefined,
+  bust: number,
+  source: "local" | "remote" = "local",
+): string {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- a new `bust` asks for a new load
-  return useMemo(() => getFileApiUrl(filePath, type, sourceSessionId, { v: ++previewLoads }), [filePath, type, sourceSessionId, bust]);
+  return useMemo(() => getFileApiUrl(filePath, type, sourceSessionId, { v: ++previewLoads }, source), [filePath, type, sourceSessionId, bust, source]);
 }
 
 /**
@@ -312,11 +321,19 @@ function useWatchRecovery(): [number, (es: EventSource) => () => void] {
   return [attempt, supervise];
 }
 
-function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null }) {
+function DownloadLink({
+  filePath,
+  sourceSessionId,
+  source = "local",
+}: {
+  filePath: string;
+  sourceSessionId?: string | null;
+  source?: "local" | "remote";
+}) {
   const { t } = useI18n();
   return (
     <a
-      href={getFileApiUrl(filePath, "download", sourceSessionId)}
+      href={getFileApiUrl(filePath, "download", sourceSessionId, {}, source)}
       download={getFileName(filePath)}
       title={t("i18n.downloadFile")}
       aria-label={t("i18n.downloadFile")}
@@ -585,7 +602,7 @@ function DiffView({
 // SOURCE_HIGHLIGHT_MAX_LINES lines again.
 const MemoizedDiffView = memo(DiffView);
 
-function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Props) {
+function ImageViewer({ filePath, cwd, sourceSessionId, source = "local", watchEnabled = true }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [watchAttempt, superviseWatch] = useWatchRecovery();
@@ -622,7 +639,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     let active = true;
     const synchronize = () => {
       const requestId = ++syncRequestRef.current;
-      fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+      fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
         .then((response) => response.json())
         .then((next: { size?: number; mtime?: string; error?: string }) => {
           if (!active || requestId !== syncRequestRef.current) return;
@@ -643,7 +660,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
         });
     };
 
-    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId)), filePath);
+    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId, {}, source)), filePath);
     esRef.current = es;
     const stopSupervising = superviseWatch(es);
 
@@ -675,9 +692,9 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
       stopSupervising();
       if (esRef.current === es) esRef.current = null;
     };
-  }, [filePath, sourceSessionId, watchEnabled, watchAttempt, superviseWatch]);
+  }, [filePath, sourceSessionId, source, watchEnabled, watchAttempt, superviseWatch]);
 
-  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust);
+  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust, source);
 
   const formatSizeStr = size != null ? formatSize(size) : null;
 
@@ -718,7 +735,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} source={source} />
       </div>
       <div
         style={{
@@ -768,7 +785,7 @@ function formatDuration(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
-function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Props) {
+function AudioViewer({ filePath, cwd, sourceSessionId, source = "local", watchEnabled = true }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [watchAttempt, superviseWatch] = useWatchRecovery();
@@ -805,7 +822,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     let active = true;
     const synchronize = () => {
       const requestId = ++syncRequestRef.current;
-      fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+      fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
         .then((response) => response.json())
         .then((next: { size?: number; mtime?: string; error?: string }) => {
           if (!active || requestId !== syncRequestRef.current) return;
@@ -826,7 +843,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
         });
     };
 
-    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId)), filePath);
+    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId, {}, source)), filePath);
     esRef.current = es;
     const stopSupervising = superviseWatch(es);
 
@@ -860,7 +877,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     };
   }, [filePath, sourceSessionId, watchEnabled, watchAttempt, superviseWatch]);
 
-  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust);
+  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust, source);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -899,7 +916,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} source={source} />
       </div>
       <div
         style={{
@@ -932,7 +949,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
   );
 }
 
-function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Props) {
+function VideoViewer({ filePath, cwd, sourceSessionId, source = "local", watchEnabled = true }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [watchAttempt, superviseWatch] = useWatchRecovery();
@@ -969,7 +986,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     let active = true;
     const synchronize = () => {
       const requestId = ++syncRequestRef.current;
-      fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+      fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
         .then((response) => response.json())
         .then((next: { size?: number; mtime?: string; error?: string }) => {
           if (!active || requestId !== syncRequestRef.current) return;
@@ -990,7 +1007,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
         });
     };
 
-    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId)), filePath);
+    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId, {}, source)), filePath);
     esRef.current = es;
     const stopSupervising = superviseWatch(es);
 
@@ -1024,7 +1041,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     };
   }, [filePath, sourceSessionId, watchEnabled, watchAttempt, superviseWatch]);
 
-  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust);
+  const src = usePreviewUrl(filePath, "read", sourceSessionId, bust, source);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -1063,7 +1080,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} source={source} />
       </div>
       <div
         style={{
@@ -1098,7 +1115,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
   );
 }
 
-function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnabled = true }: Props) {
+function DocumentViewer({ filePath, cwd, sourceSessionId, source = "local", initialPage, watchEnabled = true }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [watchAttempt, superviseWatch] = useWatchRecovery();
@@ -1113,7 +1130,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
   const ext = getFileExt(filePath);
   const isPdf = ext === "pdf";
   const pageFragment = isPdf && initialPage && initialPage > 0 ? `#page=${initialPage}` : "";
-  const previewUrl = `${usePreviewUrl(filePath, isPdf ? "read" : "preview", sourceSessionId, bust)}${pageFragment}`;
+  const previewUrl = `${usePreviewUrl(filePath, isPdf ? "read" : "preview", sourceSessionId, bust, source)}${pageFragment}`;
 
   useEffect(() => {
     setBust(0);
@@ -1124,7 +1141,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
 
     let active = true;
     const requestId = ++syncRequestRef.current;
-    fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+    fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
       .then((r) => r.json())
       .then((d: { size?: number; error?: string }) => {
         if (!active || requestId !== syncRequestRef.current) return;
@@ -1143,7 +1160,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
     return () => {
       active = false;
     };
-  }, [filePath, isPdf, sourceSessionId]);
+  }, [filePath, isPdf, sourceSessionId, source]);
 
   useEffect(() => {
     setWatching(false);
@@ -1158,7 +1175,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
     let active = true;
     const synchronize = () => {
       const requestId = ++syncRequestRef.current;
-      fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+      fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
         .then((r) => r.json())
         .then((d: { size?: number; mtime?: string; error?: string }) => {
           if (!active || requestId !== syncRequestRef.current) return;
@@ -1184,7 +1201,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
         });
     };
 
-    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId)), filePath);
+    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId, {}, source)), filePath);
     esRef.current = es;
     const stopSupervising = superviseWatch(es);
 
@@ -1243,7 +1260,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, initialPage, watchEnab
         </span>
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? "docx preview" : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} source={source} />
         <span
           title={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
           style={{ display: "flex", alignItems: "center", gap: 4, color: watching ? "#4ade80" : "var(--text-dim)", flexShrink: 0 }}
@@ -1284,6 +1301,7 @@ export function FileViewer({
   filePath,
   cwd,
   sourceSessionId,
+  source = "local",
   onOpenFile,
   onMentionLines,
   onAtMention,
@@ -1300,23 +1318,23 @@ export function FileViewer({
   const pageHidden = usePageHiddenFor(HIDDEN_PAGE_GRACE_MS);
   const watchEnabled = watchRequested && !pageHidden;
   if (isImagePath(filePath)) {
-    return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} watchEnabled={watchEnabled} />;
+    return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} source={source} watchEnabled={watchEnabled} />;
   }
   if (isAudioPath(filePath)) {
-    return <AudioViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} watchEnabled={watchEnabled} />;
+    return <AudioViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} source={source} watchEnabled={watchEnabled} />;
   }
   if (isVideoPath(filePath)) {
-    return <VideoViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} watchEnabled={watchEnabled} />;
+    return <VideoViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} source={source} watchEnabled={watchEnabled} />;
   }
   if (isDocumentPreviewPath(filePath)) {
-    return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} initialPage={initialPage} watchEnabled={watchEnabled} />;
+    return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} source={source} initialPage={initialPage} watchEnabled={watchEnabled} />;
   }
   return (
     <TextFileViewer
       filePath={filePath}
       cwd={cwd}
       sourceSessionId={sourceSessionId}
-      onOpenFile={onOpenFile}
+      source={source}
       onMentionLines={onMentionLines}
       onAtMention={onAtMention}
       gitRefreshKey={gitRefreshKey}
@@ -1332,6 +1350,7 @@ function TextFileViewer({
   filePath,
   cwd,
   sourceSessionId,
+  source = "local",
   onOpenFile,
   onMentionLines,
   onAtMention,
@@ -1424,7 +1443,7 @@ function TextFileViewer({
 
   const fetchContent = useCallback((filePath: string, offset = 0) => {
     const requestId = ++contentRequestRef.current;
-    return fetch(getFileApiUrl(filePath, "read", sourceSessionId, { offset: offset || undefined }))
+    return fetch(getFileApiUrl(filePath, "read", sourceSessionId, { offset: offset || undefined }, source))
       .then((r) => r.json())
       .then((d: FileData & { mtime?: string; error?: string }) => {
         if (requestId !== contentRequestRef.current) return null;
@@ -1444,12 +1463,12 @@ function TextFileViewer({
         setError(String(e));
         return null;
       });
-  }, [sourceSessionId]);
+  }, [sourceSessionId, source]);
 
   const fetchGitDiff = useCallback(async (targetPath: string) => {
     const requestId = ++gitDiffRequestRef.current;
     setGitDiffLoading(true);
-    if (!cwd) {
+    if (!cwd || source === "remote") {
       setGitDiff(null);
       setGitDiffLoading(false);
       setGitDiffResolved(true);
@@ -1509,7 +1528,7 @@ function TextFileViewer({
       void fetchGitDiff(filePath);
     };
 
-    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId)), filePath);
+    const es = trackEventSource("file-watch", new EventSource(getFileApiUrl(filePath, "watch", sourceSessionId, {}, source)), filePath);
     esRef.current = es;
     const stopSupervising = superviseWatch(es);
 
@@ -1524,7 +1543,7 @@ function TextFileViewer({
         synchronize();
         return;
       }
-      fetch(getFileApiUrl(filePath, "meta", sourceSessionId))
+      fetch(getFileApiUrl(filePath, "meta", sourceSessionId, {}, source))
         .then((response) => response.json())
         .then((meta: { size?: number; mtime?: string }) => {
           if (!active) return;
@@ -1594,7 +1613,7 @@ function TextFileViewer({
       return;
     }
     const controller = new AbortController();
-    fetch(getFileApiUrl(filePath, "download", sourceSessionId), { signal: controller.signal })
+    fetch(getFileApiUrl(filePath, "download", sourceSessionId, {}, source), { signal: controller.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         setHtmlFull({ text: await r.text() });
@@ -1941,7 +1960,7 @@ function TextFileViewer({
             )}
           </div>
 
-          {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />}
+          {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} source={source} />}
         </div>
       </div>
 
@@ -2062,7 +2081,7 @@ function TextFileViewer({
                     ? resolveLocalFileHref(src, markdownDirectory, cwd ?? markdownDirectory)
                     : null;
                   const imageSrc = imagePath
-                    ? getFileApiUrl(imagePath, "read", sourceSessionId)
+                    ? getFileApiUrl(imagePath, "read", sourceSessionId, {}, source)
                     : src;
                   // Dynamic local paths are served directly by the file API.
                   // eslint-disable-next-line @next/next/no-img-element
@@ -2085,7 +2104,7 @@ function TextFileViewer({
           <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, color: "var(--text-muted)", fontSize: 13, textAlign: "center" }}>
             <span>{t("files.binaryNoPreview")}</span>
             <a
-              href={getFileApiUrl(filePath, "download", sourceSessionId)}
+              href={getFileApiUrl(filePath, "download", sourceSessionId, {}, source)}
               download={getFileName(filePath)}
               className="file-viewer-mode-button"
               style={{ display: "inline-flex", alignItems: "center", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", textDecoration: "none" }}

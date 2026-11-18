@@ -35,6 +35,20 @@ import { readTextPreviewChunk } from "@/lib/text-preview";
 import { registerFileWatch } from "@/lib/file-watch-registry";
 import { FILE_WATCH_HEARTBEAT_MS } from "@/lib/file-version";
 import { pageStreamLabel, registerPageStream } from "@/lib/page-stream-registry";
+import { getRpcSession } from "@/lib/rpc-manager";
+import { openSessionManager, resolveSessionPath } from "@/lib/session-reader";
+import { isRemotePathAllowed, normalizePosixPath, readSshRemoteState } from "@/lib/ssh-remote-state";
+import {
+  isSftpDirectoryEntry,
+  joinRemotePosixPath,
+  readRemoteTextPreviewChunk,
+  sftpReaddir,
+  sftpReadFileBuffer,
+  sftpReadRange,
+  sftpStat,
+  withRemoteSftp,
+  type RemoteStat,
+} from "@/lib/ssh-remote";
 
 const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
@@ -448,6 +462,314 @@ ${bodyHtml}
 </html>`;
 }
 
+function buildStreamHeaders(filePath: string, contentType: string, asDownload = false): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    "Cache-Control": "no-cache",
+    "Accept-Ranges": "bytes",
+    "Content-Disposition": getContentDisposition(filePath, asDownload),
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (contentType === "image/svg+xml") {
+    headers["Content-Security-Policy"] =
+      "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+    headers["Referrer-Policy"] = "no-referrer";
+  }
+  return headers;
+}
+
+async function streamRemoteFile(
+  command: string,
+  filePath: string,
+  stat: RemoteStat,
+  contentType: string,
+  rangeHeader: string | null,
+  asDownload = false,
+): Promise<Response> {
+  const headers = buildStreamHeaders(filePath, contentType, asDownload);
+
+  if (!rangeHeader) {
+    const buffer = await withRemoteSftp(command, (sftp) => sftpReadFileBuffer(sftp, filePath));
+    return new Response(new Uint8Array(buffer), {
+      headers: {
+        ...headers,
+        "Content-Length": String(buffer.length),
+      },
+    });
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+  if (!match || (!match[1] && !match[2])) {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        ...headers,
+        "Content-Range": `bytes */${stat.size}`,
+      },
+    });
+  }
+
+  let start = match[1] ? Number(match[1]) : 0;
+  let end = match[2] ? Number(match[2]) : stat.size - 1;
+  if (!match[1] && match[2]) {
+    const suffixLength = Number(match[2]);
+    start = Math.max(stat.size - suffixLength, 0);
+    end = stat.size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= stat.size) {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        ...headers,
+        "Content-Range": `bytes */${stat.size}`,
+      },
+    });
+  }
+
+  end = Math.min(end, stat.size - 1);
+  const chunkSize = end - start + 1;
+  const buffer = await withRemoteSftp(command, (sftp) => sftpReadRange(sftp, filePath, start, chunkSize));
+  return new Response(new Uint8Array(buffer), {
+    status: 206,
+    headers: {
+      ...headers,
+      "Content-Length": String(buffer.length),
+      "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+    },
+  });
+}
+
+async function resolveSessionSshRemote(sessionId: string | null) {
+  if (!sessionId) return null;
+  const rpc = getRpcSession(sessionId);
+  const liveRpc = rpc?.isAlive() ? rpc : undefined;
+  const resolvedPath = liveRpc ? null : await resolveSessionPath(sessionId);
+  if (!liveRpc && !resolvedPath) return null;
+  const sm = liveRpc?.inner.sessionManager ?? openSessionManager(resolvedPath!);
+  return readSshRemoteState(sm.getEntries() as unknown[]);
+}
+
+async function handleRemoteFileGet(
+  request: NextRequest,
+  rawFilePath: string,
+  type: FileRequestType,
+  sessionId: string | null,
+): Promise<NextResponse | Response> {
+  const sshRemote = await resolveSessionSshRemote(sessionId);
+  if (!sshRemote || !sshRemote.connected) {
+    return NextResponse.json({ error: "No active SSH remote connection for this session" }, { status: 403 });
+  }
+  const filePath = normalizePosixPath(rawFilePath);
+  if (!filePath.startsWith("/")) {
+    return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  }
+
+  if (type === "watch") {
+    let closed = false;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const releaseWatch = registerFileWatch();
+    const releaseStream = registerPageStream(pageStreamLabel("file-watch", request));
+
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (eventName: string, data: Record<string, unknown>) => {
+          if (closed) return;
+          const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+          try {
+            controller.enqueue(new TextEncoder().encode(payload));
+          } catch {
+            closed = true;
+            clearInterval(heartbeat);
+          }
+        };
+        void withRemoteSftp(sshRemote.command, (sftp) => sftpStat(sftp, filePath))
+          .then((stat) => {
+            send("connected", {
+              exists: true,
+              mtime: stat.mtime.toISOString(),
+              size: stat.size,
+            });
+          })
+          .catch(() => {
+            send("connected", { exists: false, mtime: null, size: null });
+          });
+
+        heartbeat = setInterval(() => {
+          send("ping", { ts: Date.now() });
+        }, FILE_WATCH_HEARTBEAT_MS);
+      },
+      cancel() {
+        closed = true;
+        clearInterval(heartbeat);
+        releaseWatch();
+        releaseStream();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+
+  let stat: RemoteStat;
+  try {
+    stat = await withRemoteSftp(sshRemote.command, (sftp) => sftpStat(sftp, filePath));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isNotFound = /no such file|enoent/i.test(message);
+    return NextResponse.json(
+      { error: isNotFound ? "Not found" : `SSH remote error: ${message}` },
+      { status: isNotFound ? 404 : 502 },
+    );
+  }
+
+  if (type === "list") {
+    if (!stat.isDirectory) {
+      return NextResponse.json({ error: "Not a directory" }, { status: 400 });
+    }
+    const showHidden = request.nextUrl.searchParams.get("hidden") === "1";
+    const list = await withRemoteSftp(sshRemote.command, async (sftp) => {
+      const dirents = await sftpReaddir(sftp, filePath);
+      const mapped = await Promise.all(
+        dirents.map(async (entry) => {
+          const name = entry.filename;
+          if (!name || name === "." || name === ".." || name === ".git" || name === ".DS_Store") {
+            return null;
+          }
+          const isDotHidden = name.startsWith(".");
+          if (isDotHidden && !showHidden) return null;
+          let isDir = isSftpDirectoryEntry(entry);
+          if (isDir === null) {
+            try {
+              const targetStat = await sftpStat(sftp, joinRemotePosixPath(filePath, name));
+              isDir = targetStat.isDirectory;
+            } catch {
+              return null;
+            }
+          }
+          return {
+            name,
+            isDir,
+            size: entry.attrs?.size ?? 0,
+            modified: entry.attrs?.mtime ? new Date(entry.attrs.mtime * 1000).toISOString() : "",
+            ...(isDotHidden ? { hidden: "dot" as const } : {}),
+          };
+        }),
+      );
+      return mapped
+        .filter((item): item is NonNullable<typeof item> => item !== null)
+        .sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+    });
+
+    return NextResponse.json({ entries: list, path: filePath });
+  }
+
+  if (!stat.isFile) {
+    return NextResponse.json({ error: "Not a file" }, { status: 400 });
+  }
+
+  if (type === "read") {
+    const imageMime = getImageMime(filePath);
+    if (imageMime) {
+      if (stat.size > IMAGE_PREVIEW_MAX_BYTES) {
+        return NextResponse.json({ error: "Image too large (>10MB)" }, { status: 413 });
+      }
+      return streamRemoteFile(sshRemote.command, filePath, stat, imageMime, request.headers.get("range"));
+    }
+    const audioMime = getAudioMime(filePath);
+    if (audioMime) {
+      return streamRemoteFile(sshRemote.command, filePath, stat, audioMime, request.headers.get("range"));
+    }
+    const videoMime = getVideoMime(filePath);
+    if (videoMime) {
+      return streamRemoteFile(sshRemote.command, filePath, stat, videoMime, request.headers.get("range"));
+    }
+    const documentMime = getDocumentMime(filePath);
+    if (documentMime) {
+      return streamRemoteFile(sshRemote.command, filePath, stat, documentMime, request.headers.get("range"));
+    }
+    const rawOffset = request.nextUrl.searchParams.get("offset");
+    if (rawOffset !== null && !/^\d+$/.test(rawOffset)) {
+      return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+    }
+    const offset = Number(rawOffset ?? 0);
+    if (!Number.isSafeInteger(offset) || offset > stat.size) {
+      return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
+    }
+    const chunk = await withRemoteSftp(sshRemote.command, (sftp) =>
+      readRemoteTextPreviewChunk(sftp, filePath, stat.size, offset)
+    );
+    return NextResponse.json({
+      ...chunk,
+      language: getLanguage(filePath),
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+    });
+  }
+
+  if (type === "download") {
+    const mime =
+      getImageMime(filePath)
+      || getAudioMime(filePath)
+      || getVideoMime(filePath)
+      || getDocumentMime(filePath)
+      || "application/octet-stream";
+    return streamRemoteFile(sshRemote.command, filePath, stat, mime, request.headers.get("range"), true);
+  }
+
+  if (type === "meta") {
+    const imageMime = getImageMime(filePath);
+    const audioMime = getAudioMime(filePath);
+    const videoMime = getVideoMime(filePath);
+    const documentMime = getDocumentMime(filePath);
+    return NextResponse.json({
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      language: getLanguage(filePath),
+      mime: imageMime || audioMime || videoMime || documentMime || "text/plain",
+      previewKind: documentPreviewKind(filePath),
+    });
+  }
+
+  if (type === "preview") {
+    if (getFileExt(filePath) !== "docx") {
+      return NextResponse.json({ error: "Preview not available for this file type" }, { status: 400 });
+    }
+    if (stat.size > DOCX_PREVIEW_MAX_BYTES) {
+      return NextResponse.json({ error: "DOCX too large for preview (>10MB)" }, { status: 413 });
+    }
+    const buffer = await withRemoteSftp(sshRemote.command, (sftp) => sftpReadFileBuffer(sftp, filePath, DOCX_PREVIEW_MAX_BYTES));
+    const mammoth = await import("mammoth");
+    const result = await mammoth.convertToHtml(
+      { buffer },
+      {
+        externalFileAccess: false,
+        convertImage: mammoth.images.dataUri,
+      },
+    );
+    const html = wrapDocxPreviewHtml(result.value, path.posix.basename(filePath));
+    return new Response(html, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  return NextResponse.json({ error: "Invalid file request type" }, { status: 400 });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
@@ -470,6 +792,10 @@ export async function GET(
       return NextResponse.json({ error: "Invalid file request type" }, { status: 400 });
     }
     const sessionId = request.nextUrl.searchParams.get("sessionId");
+    const source = request.nextUrl.searchParams.get("source");
+    if (source === "remote") {
+      return handleRemoteFileGet(request, filePath, type, sessionId);
+    }
 
     const allowedRoots = await getAllowedFileRoots();
     const allowedByRoot = isFilePathAllowed(filePath, allowedRoots);

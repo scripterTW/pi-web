@@ -46,6 +46,8 @@ const nextConfig: NextConfig = {
   transpilePackages: ["mermaid", "@mermaid-js/parser"],
   serverExternalPackages: [
     "node-pty",
+    "ssh2",
+    "ssh-config",
     "undici",
     "web-push",
     "@earendil-works/pi-coding-agent",
