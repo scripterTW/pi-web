@@ -1,6 +1,6 @@
 # Pi Web
 
-[中文文档](./docs/README.zh-CN.md) | [日本語](./docs/README.ja.md) | [Русский](./docs/README.ru.md)
+[中文文档](./docs/README.zh-CN.md) | [正體中文](./docs/README.zh-TW.md) | [日本語](./docs/README.ja.md) | [Русский](./docs/README.ru.md)
 
 Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.
 
@@ -13,6 +13,7 @@ Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi)
 - **Session workspace**: browse, resume, rename, export, and delete conversations grouped by project, with running state, context usage, cost, and compaction details.
 - **Two ways to branch**: **New session** creates an independent session file from an earlier message; **Edit from here** creates a branch inside the current session.
 - **Project file tools**: browse and upload files, inspect Git diffs, and preview source, Markdown, images, audio, PDFs, and DOCX files with automatic refresh.
+- **SSH remote browsing**: when a session is connected to a remote host with the [pi-ssh-remote](https://github.com/petrichor20211/pi-ssh-remote) pi extension, the file panel switches between the local project and the remote working directory and browses and previews remote source, Markdown, images, audio, PDFs and DOCX files over SFTP; file links in the chat open through the same connection.
 - **Git worktrees**: switch checkouts from the sidebar while keeping sessions from the same repository grouped together.
 - **Web-based configuration**: manage provider login and API keys, models, model tests, plugin packages, and skills without leaving Pi Web.
 - **English, Simplified Chinese, and Traditional Chinese UI**: Pi Web follows the browser language initially. Change it under Settings → General → Language.
@@ -119,6 +120,7 @@ npx @agegr/pi-web@latest
 - **Filesystem access**: Pi Web must be able to read the agent data directory and the working directories recorded by its sessions. Run Pi Web in the same filesystem environment as pi when sharing existing sessions.
 - **Shared configuration**: the Models panel uses pi's model, settings, and credential storage, so changes are visible to both interfaces. An open session applies a saved edit of its model when you select the model again.
 - **File access boundary**: the file browser is limited to working directories selected in Pi Web and project or session roots it already knows about; it is not a general filesystem browser.
+- **SSH remote files**: Pi Web does not open or close remote connections of its own. It reads the connection state that [pi-ssh-remote](https://github.com/petrichor20211/pi-ssh-remote) stores in the session and connects over SFTP itself with the recorded `ssh` command, resolving keys and jump hosts from your local `~/.ssh/config` and agent. The host must have been accepted by the extension in pi first, so its key is in `~/.pi/agent/ssh-remote-known-hosts.json`; remote browsing has no Git status, @-mention search index, or upload.
 - **Git worktrees**: see [Worktrees in Pi Web](./docs/worktrees.md) for switcher visibility, worktree creation, and removal behavior.
 - **Integration hooks**: apps that embed Pi Web can replace the session row's context menu, and server-side pi extensions can keep a session from idle shutdown; see [Integration Hooks](./docs/integrations.md).
 

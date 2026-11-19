@@ -1,6 +1,6 @@
 # Pi Web
 
-[English](../README.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
+[English](../README.md) | [正體中文](./README.zh-TW.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
 [pi 编程智能体](https://github.com/earendil-works/pi)的本地浏览器界面。Pi Web 与 pi 共用本机配置和会话文件，可在浏览器中查找和继续对话、运行智能体、配置模型与资源，并查看项目文件。
 
@@ -15,6 +15,7 @@
 - **会话工作区**：按项目查找、继续、重命名、导出和删除对话，并查看运行状态、上下文占用、花费和压缩信息。
 - **两种分支方式**：**新会话**会从较早的消息创建独立会话文件；**从此处编辑**会在当前会话内创建分支。
 - **项目文件工具**：浏览和上传文件、查看 Git Diff，并预览源码、Markdown、图片、音频、PDF 和 DOCX；文件变化后会自动刷新。
+- **SSH 远程浏览**：当会话通过 [pi-ssh-remote](https://github.com/petrichor20211/pi-ssh-remote) pi 扩展连接到远程主机时，文件面板可在本地项目和远程工作目录之间切换，通过 SFTP 浏览和预览远程的源码、Markdown、图片、音频、PDF 和 DOCX；聊天中的文件链接也会通过同一连接打开。
 - **Git worktree**：从侧边栏切换 checkout，同时把同一仓库不同 worktree 的会话归在一起。
 - **网页配置**：无需离开 Pi Web，即可管理 Provider 登录和 API Key、模型、模型测试、插件包及技能。
 - **英文、简体中文和繁体中文界面**：Pi Web 首次打开时跟随浏览器语言，也可在「设置 → 常规 → 语言」中切换语言。
@@ -121,6 +122,7 @@ npx @agegr/pi-web@latest
 - **文件系统访问**：Pi Web 必须能读取智能体数据目录及会话记录中的工作目录。与现有 pi 会话共用数据时，请让 Pi Web 运行在与 pi 相同的文件系统环境中。
 - **共享配置**：模型面板使用 pi 的模型、设置和凭据存储，因此两种界面都能看到相关更改。已打开的会话要再次选择该模型，才会应用保存后的模型修改。
 - **文件访问边界**：文件浏览器仅能访问在 Pi Web 中选择过的工作目录，以及它已识别的项目或会话根目录；它不是通用的文件系统浏览器。
+- **SSH 远程文件**：Pi Web 不会自行打开或关闭远程连接。它读取 [pi-ssh-remote](https://github.com/petrichor20211/pi-ssh-remote) 存储在会话中的连接状态，并用记录的 `ssh` 命令自行通过 SFTP 连接，从本机的 `~/.ssh/config` 和 ssh agent 解析密钥与跳板主机。主机必须已在 pi 中被该扩展接受过，其密钥才会写入 `~/.pi/agent/ssh-remote-known-hosts.json`；远程浏览不提供 Git 状态、@ 提及搜索索引和上传。
 - **Git worktree**：切换器何时显示、如何创建 worktree，以及删除会产生什么影响，见 [Pi Web 里的 Worktree](./worktrees.zh-CN.md)。
 - **集成接口**：嵌入 Pi Web 的应用可以替换会话行的右键菜单，服务端的 pi 扩展可以让会话不因空闲被关闭；见 [Integration Hooks](./integrations.md)。
 
