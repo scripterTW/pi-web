@@ -77,7 +77,7 @@ import type { AgentEndInfo, NewSessionChoices } from "@/hooks/useAgentSession";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { formatActiveDuration, formatCompactCount, formatCostShort } from "@/lib/session-stats-format";
 import type { FileViewerState } from "@/lib/file-viewer-state";
-import type { SshRemoteState } from "@/lib/ssh-remote-state";
+import { isRemotePathAllowed, type SshRemoteState } from "@/lib/ssh-remote-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { createSideChat, deleteSideChat } from "@/lib/side-chat-client";
 import { sideChatHit } from "@/lib/session-search-hit";
@@ -1339,8 +1339,20 @@ export function AppShell() {
   }, [isMobile]);
 
   const handleOpenLinkedFile = useCallback((filePath: string, page?: number) => {
-    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
-  }, [handleOpenFile, selectedSession?.id]);
+    // Files cited in a chat go through this handler, unlike the explorer's own
+    // clicks. Without a source the viewer reads the path on the pi-web host,
+    // so a remote session's file (e.g. /var/app/...) 404s as "Not found".
+    const remote = Boolean(
+      sshRemote?.connected &&
+      sshRemote.cwd &&
+      isRemotePathAllowed(filePath, sshRemote.cwd),
+    );
+    handleOpenFile(filePath, getFileName(filePath), {
+      sourceSessionId: selectedSession?.id ?? null,
+      source: remote ? "remote" : "local",
+      page,
+    });
+  }, [handleOpenFile, selectedSession?.id, sshRemote]);
 
   const handleOpenTerminal = useCallback((cwd: string) => {
     const existing = terminalTabs.find((tab) => tab.cwd === cwd);
